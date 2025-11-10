@@ -1,0 +1,34 @@
+﻿*** Begin Patch
+*** Update File: korean_quiz.py
+@@
+-    parser.add_argument(
+-        "--data-dir",
+-        type=Path,
+-        default=Path("data"),
+-        help="Directory containing verbs.json, nouns.json, and sentences.json files.",
+-    )
++    parser.add_argument(
++        "--data-dir",
++        type=Path,
++        default=Path("data"),
++        help=(
++            "Directory containing JSON files for categories: sino_numbers.json, "
++            "native_numbers.json, particles.json, adjectives.json, adverbs.json, "
++            "interrogatives.json"
++        ),
++    )
+@@
+-    category_files = {
+-        "Verb": args.data_dir / "verbs.json",
+-        "Noun": args.data_dir / "nouns.json",
+-        "Sentence": args.data_dir / "sentences.json",
+-    }
++    category_files = {
++        "Sino Numbers": args.data_dir / "sino_numbers.json",
++        "Native Numbers": args.data_dir / "native_numbers.json",
++        "Particles": args.data_dir / "particles.json",
++        "Adjectives": args.data_dir / "adjectives.json",
++        "Adverbs": args.data_dir / "adverbs.json",
++        "Interrogatives": args.data_dir / "interrogatives.json",
++    }
+*** End Patch
