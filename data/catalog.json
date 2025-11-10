@@ -1,0 +1,74 @@
+{
+  "groups": [
+    {
+      "name": "Lessons",
+      "categories": [
+        {
+          "name": "Class Lesson",
+          "file": "class_lesson_story.json"
+        },
+        {
+          "name": "SKNS1b Vocabulary 1",
+          "file": "SKNS1b_vocabulary1.json"
+        },
+        {
+          "name": "SKNS1b Vocabulary 2",
+          "file": "SKNS1b_vocabulary2.json"
+        },
+        {
+          "name": "SKNS1b Vocabulary 3",
+          "file": "SKNS1b_vocabulary3.json"
+        },
+        {
+          "name": "SKNS1b Vocabulary 4",
+          "file": "SKNS1b_vocabulary4.json"
+        },
+        {
+          "name": "SKNS1b Vocabulary 5",
+          "file": "SKNS1b_vocabulary5.json"
+        }
+      ]
+    },
+    {
+      "name": "Vocabulary & Grammar",
+      "categories": [
+        {
+          "name": "Sino Numbers",
+          "file": "sino_numbers.json"
+        },
+        {
+          "name": "Native Numbers",
+          "file": "native_numbers.json"
+        },
+        {
+          "name": "Particles",
+          "file": "particles.json"
+        },
+        {
+          "name": "Nouns",
+          "file": "nouns.json"
+        },
+        {
+          "name": "Verbs",
+          "file": "verbs.json"
+        },
+        {
+          "name": "Adjectives",
+          "file": "adjectives.json"
+        },
+        {
+          "name": "Adverbs",
+          "file": "adverbs.json"
+        },
+        {
+          "name": "Interrogatives",
+          "file": "interrogatives.json"
+        },
+        {
+          "name": "Sentences",
+          "file": "sentences.json"
+        }
+      ]
+    }
+  ]
+}

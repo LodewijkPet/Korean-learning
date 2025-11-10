@@ -47,6 +47,9 @@ def load_vocab(path: Path) -> Vocabulary:
     unique_translations = {english for _, english in vocabulary}
     if len(unique_translations) < 4:
         raise ValueError(f"{path} must contain at least four unique English translations.")
+    unique_korean = {korean for korean, _ in vocabulary}
+    if len(unique_korean) < 4:
+        raise ValueError(f"{path} must contain at least four unique Korean entries.")
 
     return vocabulary
 
@@ -59,17 +62,66 @@ class Question:
     korean: str
 
 
-def make_question(pool: Vocabulary, selected: Tuple[str, str]) -> Question:
+@dataclass(frozen=True)
+class CategoryDefinition:
+    name: str
+    path: Path
+    group: str
+
+
+DEFAULT_CATALOG = {
+    "groups": [
+        {
+            "name": "Lessons",
+            "categories": [
+                {"name": "Class Lesson", "file": "class_lesson_story.json"},
+            ],
+        },
+        {
+            "name": "Vocabulary & Grammar",
+            "categories": [
+                {"name": "Sino Numbers", "file": "sino_numbers.json"},
+                {"name": "Native Numbers", "file": "native_numbers.json"},
+                {"name": "Particles", "file": "particles.json"},
+                {"name": "Nouns", "file": "nouns.json"},
+                {"name": "Verbs", "file": "verbs.json"},
+                {"name": "Adjectives", "file": "adjectives.json"},
+                {"name": "Adverbs", "file": "adverbs.json"},
+                {"name": "Interrogatives", "file": "interrogatives.json"},
+                {"name": "Sentences", "file": "sentences.json"},
+                {"name": "SKNS1b Vocabulary 1", "file": "SKNS1b_vocabulary1.json"},
+                {"name": "SKNS1b Vocabulary 2", "file": "SKNS1b_vocabulary2.json"},
+                {"name": "SKNS1b Vocabulary 3", "file": "SKNS1b_vocabulary3.json"},
+                {"name": "SKNS1b Vocabulary 4", "file": "SKNS1b_vocabulary4.json"},
+                {"name": "SKNS1b Vocabulary 5", "file": "SKNS1b_vocabulary5.json"},
+            ],
+        },
+    ]
+}
+
+
+def make_question(pool: Vocabulary, selected: Tuple[str, str], direction: str) -> Question:
     """Create a multiple-choice question using a pre-selected vocabulary item."""
     korean, english = selected
-    distractors = [candidate for _, candidate in pool if candidate != english]
-    if len(distractors) < 3:
-        raise ValueError("Vocabulary must include at least four unique meanings.")
-    options = random.sample(distractors, k=3)
-    options.append(english)
-    random.shuffle(options)
-    prompt = korean
-    return Question(prompt=prompt, options=options, answer=english, korean=korean)
+    if direction == "ko-en":
+        distractors = [candidate for _, candidate in pool if candidate != english]
+        if len(distractors) < 3:
+            raise ValueError("Vocabulary must include at least four unique meanings.")
+        options = random.sample(distractors, k=3)
+        options.append(english)
+        random.shuffle(options)
+        prompt = korean
+        answer = english
+    else:
+        distractors = [candidate for candidate, _ in pool if candidate != korean]
+        if len(distractors) < 3:
+            raise ValueError("Vocabulary must include at least four unique Korean words.")
+        options = random.sample(distractors, k=3)
+        options.append(korean)
+        random.shuffle(options)
+        prompt = english
+        answer = korean
+    return Question(prompt=prompt, options=options, answer=answer, korean=korean)
 
 
 def compute_weight(history: History, mode: str) -> float:
@@ -95,7 +147,7 @@ def compute_weight(history: History, mode: str) -> float:
     return max(weight, 0.1)
 
 
-def build_question(pool: Vocabulary, stats: CategoryStats, mode: str) -> Question:
+def build_question(pool: Vocabulary, stats: CategoryStats, mode: str, direction: str) -> Question:
     """Select a vocabulary item using weighted sampling and build a question."""
     weights: List[float] = []
     for korean, english in pool:
@@ -104,7 +156,7 @@ def build_question(pool: Vocabulary, stats: CategoryStats, mode: str) -> Questio
         weight = compute_weight(history, mode)
         weights.append(weight)
     selected = random.choices(pool, weights=weights, k=1)[0]
-    return make_question(pool, selected)
+    return make_question(pool, selected, direction)
 
 
 def load_progress(path: Path, categories: List[str]) -> Tuple[Progress, Dict[str, Any]]:
@@ -181,6 +233,105 @@ def load_progress(path: Path, categories: List[str]) -> Tuple[Progress, Dict[str
                 category_stats[str(korean)] = {"history": history}
         progress[category] = category_stats
     return progress, metadata
+
+
+def load_category_catalog(
+    data_dir: Path, catalog_path: Path
+) -> Tuple[List[CategoryDefinition], List[Tuple[str, List[str]]]]:
+    """Load grouped category definitions from disk (or fall back to defaults)."""
+
+    def _derive_name(file_token: str) -> str:
+        stem = Path(file_token).stem.replace("_", " ").strip()
+        return stem.title() if stem else "Untitled"
+
+    if catalog_path.exists():
+        with catalog_path.open(encoding="utf-8-sig") as handle:
+            raw_catalog = json.load(handle)
+    else:
+        raw_catalog = DEFAULT_CATALOG
+        try:
+            catalog_path.parent.mkdir(parents=True, exist_ok=True)
+            with catalog_path.open("w", encoding="utf-8") as handle:
+                json.dump(raw_catalog, handle, ensure_ascii=False, indent=2)
+        except OSError:
+            # Fall back to the in-memory default catalog if the file cannot be written.
+            pass
+
+    if isinstance(raw_catalog, dict) and "groups" in raw_catalog:
+        raw_groups = raw_catalog["groups"]
+    elif isinstance(raw_catalog, dict):
+        raw_groups = [
+            {"name": str(group_name), "categories": entries}
+            for group_name, entries in raw_catalog.items()
+        ]
+    else:
+        raise ValueError("Catalog must be a JSON object.")
+
+    if not isinstance(raw_groups, list) or not raw_groups:
+        raise ValueError("Catalog 'groups' entry must be a non-empty list.")
+
+    definitions: List[CategoryDefinition] = []
+    grouped_names: List[Tuple[str, List[str]]] = []
+    seen_names: set[str] = set()
+
+    for raw_group in raw_groups:
+        if not isinstance(raw_group, dict):
+            raise ValueError("Each catalog group must be an object.")
+        group_name = str(raw_group.get("name") or "").strip()
+        if not group_name:
+            raise ValueError("Each catalog group requires a non-empty 'name'.")
+        entries = raw_group.get("categories")
+        if not isinstance(entries, list) or not entries:
+            continue
+        group_categories: List[str] = []
+        for entry in entries:
+            if isinstance(entry, str):
+                file_token = entry.strip()
+                if not file_token:
+                    raise ValueError("Category file names cannot be empty.")
+                file_name = (
+                    file_token
+                    if file_token.lower().endswith(".json")
+                    else f"{file_token}.json"
+                )
+                display_name = _derive_name(file_name)
+            elif isinstance(entry, dict):
+                display_name = str(entry.get("name") or "").strip()
+                file_token = str(entry.get("file") or "").strip()
+                if not file_token:
+                    raise ValueError("Category entries require a 'file' value.")
+                file_name = file_token
+                if not display_name:
+                    display_name = _derive_name(file_name)
+            else:
+                raise ValueError("Catalog categories must be strings or objects.")
+
+            if not file_name.lower().endswith(".json"):
+                file_name = f"{file_name}.json"
+
+            if not display_name:
+                display_name = _derive_name(file_name)
+
+            if display_name in seen_names:
+                raise ValueError(f"Duplicate category name detected: {display_name}")
+            seen_names.add(display_name)
+
+            file_path = Path(file_name)
+            if not file_path.is_absolute():
+                file_path = data_dir / file_path
+
+            definitions.append(
+                CategoryDefinition(name=display_name, path=file_path, group=group_name)
+            )
+            group_categories.append(display_name)
+
+        if group_categories:
+            grouped_names.append((group_name, group_categories))
+
+    if not definitions:
+        raise ValueError("The catalog did not define any categories.")
+
+    return definitions, grouped_names
 
 
 class AudioManager:
@@ -361,14 +512,14 @@ class QuestionCard:
         self.question_var = tk.StringVar()
         self.feedback_var = tk.StringVar()
 
-        question_label = tk.Label(
+        self.question_label = tk.Label(
             self.frame,
             textvariable=self.question_var,
             wraplength=320,
             justify="left",
             font=("Segoe UI", 20, "bold"),
         )
-        question_label.pack(anchor="w", pady=(0, 16))
+        self.question_label.pack(anchor="w", pady=(0, 16))
 
         self.buttons: List[tk.Button] = []
         self._default_button_styles: List[Dict[str, str]] = []
@@ -390,7 +541,7 @@ class QuestionCard:
                 }
             )
 
-        feedback_label = tk.Label(
+        self.feedback_label = tk.Label(
             self.frame,
             textvariable=self.feedback_var,
             fg="#555555",
@@ -398,7 +549,7 @@ class QuestionCard:
             justify="left",
             font=("Segoe UI", 12),
         )
-        feedback_label.pack(anchor="w", pady=(10, 0))
+        self.feedback_label.pack(anchor="w", pady=(10, 0))
 
         self.load_question()
 
@@ -498,6 +649,16 @@ class QuestionCard:
         self._rotate_category()
         self.frame.after(1500, self.load_question)
 
+    def set_font_scheme(self, scheme: Dict[str, Tuple[Any, ...]]) -> None:
+        """Apply the supplied font scheme to labels and buttons."""
+        question_font = scheme.get("question", ("Segoe UI", 20, "bold"))
+        option_font = scheme.get("option", ("Segoe UI", 16))
+        feedback_font = scheme.get("feedback", ("Segoe UI", 12))
+        self.question_label.config(font=question_font)
+        for button in self.buttons:
+            button.config(font=option_font)
+        self.feedback_label.config(font=feedback_font)
+
 
 class QuizApp:
     """Main application window that coordinates question cards and scoring."""
@@ -510,6 +671,7 @@ class QuizApp:
         progress_path: Path,
         audio_manager: AudioManager,
         metadata: Dict[str, Any],
+        category_groups: Optional[List[Tuple[str, List[str]]]] = None,
     ) -> None:
         self.root = root
         self.vocabulary = vocabulary
@@ -519,6 +681,12 @@ class QuizApp:
         self.save_error_reported = False
         self.categories = list(vocabulary.keys())
         self.active_categories = list(self.categories)
+        self.cards: List[QuestionCard] = []
+        self.translation_direction = "ko-en"
+        if category_groups:
+            self.category_groups = category_groups
+        else:
+            self.category_groups = [("All sections", self.categories)]
 
         self.current_streak = int(metadata.get("streak", 0) or 0)
         self.longest_streak = int(metadata.get("longest_streak", 0) or 0)
@@ -573,6 +741,78 @@ class QuizApp:
             wraplength=200,
         )
         section_status_label.pack(anchor="w", pady=(4, 0))
+        self.score_toggle_button = tk.Button(
+            controls_frame,
+            text="Hide Scores",
+            font=("Segoe UI", 10),
+            command=self._toggle_scoreboard_visibility,
+        )
+        self.score_toggle_button.pack(anchor="w", pady=(8, 0))
+        self.scoreboard_visible = True
+        self.font_presets: Dict[str, Dict[str, Tuple[Any, ...]]] = {
+            "small": {
+                "question": ("Segoe UI", 16, "bold"),
+                "option": ("Segoe UI", 12),
+                "feedback": ("Segoe UI", 10),
+            },
+            "normal": {
+                "question": ("Segoe UI", 18, "bold"),
+                "option": ("Segoe UI", 14),
+                "feedback": ("Segoe UI", 11),
+            },
+            "large": {
+                "question": ("Segoe UI", 20, "bold"),
+                "option": ("Segoe UI", 16),
+                "feedback": ("Segoe UI", 12),
+            },
+        }
+        self.font_size_var = tk.StringVar(value="large")
+        self.current_font_size = self.font_size_var.get()
+        font_controls = tk.Frame(controls_frame)
+        font_controls.pack(anchor="w", pady=(10, 0), fill="x")
+        font_label = tk.Label(font_controls, text="Font size:", font=("Segoe UI", 10, "bold"))
+        font_label.pack(anchor="w")
+        buttons_row = tk.Frame(font_controls)
+        buttons_row.pack(anchor="w", pady=(4, 0))
+        self.font_size_buttons: Dict[str, tk.Radiobutton] = {}
+        for index, (size_key, label_text) in enumerate(
+            (("small", "Small"), ("normal", "Normal"), ("large", "Large"))
+        ):
+            button = tk.Radiobutton(
+                buttons_row,
+                text=label_text,
+                value=size_key,
+                variable=self.font_size_var,
+                indicatoron=False,
+                width=8,
+                command=self._handle_font_size_button,
+            )
+            button.pack(side="left", padx=(0 if index == 0 else 6, 0))
+            self.font_size_buttons[size_key] = button
+        self.direction_var = tk.StringVar(value=self.translation_direction)
+        direction_controls = tk.Frame(controls_frame)
+        direction_controls.pack(anchor="w", pady=(10, 0), fill="x")
+        direction_label = tk.Label(
+            direction_controls, text="Direction:", font=("Segoe UI", 10, "bold")
+        )
+        direction_label.pack(anchor="w")
+        direction_row = tk.Frame(direction_controls)
+        direction_row.pack(anchor="w", pady=(4, 0))
+        direction_options = (
+            ("ko-en", "Korean -> English"),
+            ("en-ko", "English -> Korean"),
+        )
+        for index, (dir_key, dir_label) in enumerate(direction_options):
+            button = tk.Radiobutton(
+                direction_row,
+                text=dir_label,
+                value=dir_key,
+                variable=self.direction_var,
+                indicatoron=False,
+                width=18,
+                command=self._handle_direction_change,
+            )
+            button.pack(side="left", padx=(0 if index == 0 else 6, 0))
 
         self.scoreboard_frame = tk.Frame(header_frame)
         self.scoreboard_frame.pack(side="right", anchor="ne", padx=(18, 0))
@@ -626,7 +866,10 @@ class QuizApp:
         panel_title.pack(anchor="w")
         panel_hint = tk.Label(
             self.selection_panel,
-            text="Pick one or more sections to focus on. All quiz cards will limit themselves to the selected list.",
+            text=(
+                "Pick one or more sections to focus on. Sections are grouped according to "
+                "the catalog.json file so lessons and vocab sets stay organised."
+            ),
             justify="left",
             wraplength=720,
         )
@@ -634,17 +877,23 @@ class QuizApp:
         options_frame = tk.Frame(self.selection_panel)
         options_frame.pack(fill="x")
         self.category_vars: Dict[str, tk.BooleanVar] = {}
-        for index, category in enumerate(self.categories):
-            var = tk.BooleanVar(value=True)
-            self.category_vars[category] = var
-            checkbox = tk.Checkbutton(
-                options_frame,
-                text=category,
-                variable=var,
-                anchor="w",
-                justify="left",
-            )
-            checkbox.grid(row=index // 3, column=index % 3, sticky="w", padx=8, pady=4)
+        groups_to_render = self.category_groups or [("All sections", self.categories)]
+        for index, (group_name, group_categories) in enumerate(groups_to_render):
+            group_frame = tk.LabelFrame(options_frame, text=group_name)
+            group_frame.grid(row=0, column=index, sticky="nsew", padx=6, pady=6)
+            options_frame.grid_columnconfigure(index, weight=1)
+            for category in group_categories:
+                if category not in self.category_vars:
+                    self.category_vars[category] = tk.BooleanVar(value=True)
+                checkbox = tk.Checkbutton(
+                    group_frame,
+                    text=category,
+                    variable=self.category_vars[category],
+                    anchor="w",
+                    justify="left",
+                    wraplength=220,
+                )
+                checkbox.pack(fill="x", anchor="w", padx=6, pady=2)
         panel_buttons = tk.Frame(self.selection_panel)
         panel_buttons.pack(fill="x", pady=(8, 0))
         select_all_button = tk.Button(
@@ -667,7 +916,6 @@ class QuizApp:
         self.cards_frame = tk.Frame(root)
         self.cards_frame.pack(fill="both", expand=True)
 
-        self.cards: List[QuestionCard] = []
         categories = self.active_categories
 
         # Build 3 columns x 2 rows: top fresh, bottom review.
@@ -688,6 +936,7 @@ class QuizApp:
                     all_categories=categories,
                 )
                 card.frame.grid(row=row, column=col, padx=8, pady=6, sticky="nsew")
+                card.set_font_scheme(self.font_presets[self.current_font_size])
                 self.cards.append(card)
 
         self.update_scoreboard()
@@ -696,7 +945,7 @@ class QuizApp:
         """Return the next weighted question for a category."""
         pool = self.vocabulary[category]
         stats = self.progress.setdefault(category, {})
-        return build_question(pool, stats, mode)
+        return build_question(pool, stats, mode, self.translation_direction)
 
     def handle_answer(self, category: str, is_correct: bool, korean_word: str) -> None:
         """Update scores and refresh the scoreboard when a card reports an answer."""
@@ -767,6 +1016,42 @@ class QuizApp:
             if self.selection_panel_visible:
                 self.selection_panel.pack_forget()
         self.selection_panel_visible = show
+
+    def _toggle_scoreboard_visibility(self) -> None:
+        """Hide or show the per-section score list."""
+        if self.scoreboard_visible:
+            self.scoreboard_frame.pack_forget()
+            self.score_toggle_button.config(text="Show Scores")
+        else:
+            self.scoreboard_frame.pack(side="right", anchor="ne", padx=(18, 0))
+            self.score_toggle_button.config(text="Hide Scores")
+        self.scoreboard_visible = not self.scoreboard_visible
+
+    def _handle_font_size_button(self) -> None:
+        """Respond to font size button presses."""
+        self._set_font_size(self.font_size_var.get())
+
+    def _set_font_size(self, size: str) -> None:
+        """Apply the requested font preset to all cards."""
+        if size not in self.font_presets:
+            size = "large"
+            self.font_size_var.set(size)
+        scheme = self.font_presets[size]
+        self.current_font_size = size
+        for card in self.cards:
+            card.set_font_scheme(scheme)
+
+    def _handle_direction_change(self) -> None:
+        """Switch between Korean→English and English→Korean practice."""
+        new_direction = self.direction_var.get()
+        if new_direction not in ("ko-en", "en-ko"):
+            new_direction = "ko-en"
+            self.direction_var.set(new_direction)
+        if new_direction == self.translation_direction:
+            return
+        self.translation_direction = new_direction
+        for card in self.cards:
+            card.load_question()
 
     def _sync_section_checkboxes(self) -> None:
         active = set(self.active_categories)
@@ -847,34 +1132,37 @@ def main() -> None:
         "--data-dir",
         type=Path,
         default=Path("data"),
-        help=("Directory containing JSON files for categories: sino_numbers.json, native_numbers.json, particles.json, adjectives.json, adverbs.json, interrogatives.json"),
+        help="Directory containing JSON vocab/lesson files plus catalog.json.",
+    )
+    parser.add_argument(
+        "--catalog",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to a catalog JSON file that defines groups of lesson and vocabulary datasets."
+        ),
     )
     args = parser.parse_args()
     args.data_dir.mkdir(parents=True, exist_ok=True)
+    catalog_path = args.catalog if args.catalog else args.data_dir / "catalog.json"
 
     root = tk.Tk()
     root.withdraw()
 
-    category_files = {
-        "Sino Numbers": args.data_dir / "sino_numbers.json",
-        "Native Numbers": args.data_dir / "native_numbers.json",
-        "Particles": args.data_dir / "particles.json",
-        "Nouns": args.data_dir / "nouns.json",
-        "Verbs": args.data_dir / "verbs.json",
-        "Adjectives": args.data_dir / "adjectives.json",
-        "Adverbs": args.data_dir / "adverbs.json",
-        "Interrogatives": args.data_dir / "interrogatives.json",
-        "Sentences": args.data_dir / "sentences.json",
-        "Class Lesson": args.data_dir / "class_lesson_story.json",
-    }
     progress_path = args.data_dir / "progress.json"
     audio_dir = args.data_dir / "audio"
 
     try:
+        category_definitions, grouped_categories = load_category_catalog(
+            args.data_dir, catalog_path
+        )
         vocabulary = {
-            category: load_vocab(path) for category, path in category_files.items()
+            definition.name: load_vocab(definition.path)
+            for definition in category_definitions
         }
-        progress, metadata = load_progress(progress_path, list(category_files.keys()))
+        progress, metadata = load_progress(
+            progress_path, [definition.name for definition in category_definitions]
+        )
     except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError, OSError) as error:
         messagebox.showerror("Unable to load data", str(error))
         root.destroy()
@@ -882,7 +1170,15 @@ def main() -> None:
 
     root.deiconify()
     audio_manager = AudioManager(audio_dir)
-    QuizApp(root, vocabulary, progress, progress_path, audio_manager, metadata)
+    QuizApp(
+        root,
+        vocabulary,
+        progress,
+        progress_path,
+        audio_manager,
+        metadata,
+        grouped_categories,
+    )
     root.mainloop()
 
 
