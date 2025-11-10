@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from datetime import datetime
 
+import string
+
+PUNCT_TRANSLATOR = str.maketrans("", "", string.punctuation)
+
 import edge_tts
 import tkinter as tk
 from tkinter import messagebox
@@ -157,6 +161,14 @@ def build_question(pool: Vocabulary, stats: CategoryStats, mode: str, direction:
         weights.append(weight)
     selected = random.choices(pool, weights=weights, k=1)[0]
     return make_question(pool, selected, direction)
+
+
+def normalize_answer(text: str) -> str:
+    """Normalize user input for comparison."""
+    normalized = text.strip().lower()
+    normalized = normalized.translate(PUNCT_TRANSLATOR)
+    normalized = " ".join(normalized.split())
+    return normalized
 
 
 def load_progress(path: Path, categories: List[str]) -> Tuple[Progress, Dict[str, Any]]:
@@ -478,7 +490,7 @@ class AudioManager:
 
 
 class QuestionCard:
-    """UI component that displays a single category question and choices.
+    """UI component that displays a single category question and answers.
 
     Each card has a fixed mode (fresh/review) but can rotate categories
     randomly after each answer.
@@ -493,15 +505,19 @@ class QuestionCard:
         on_answer: Callable[[str, bool, str], None],
         play_audio: Optional[Callable[[str], None]] = None,
         all_categories: Optional[List[str]] = None,
+        answer_mode: str = "choice",
+        get_answers: Optional[Callable[[str], List[str]]] = None,
     ) -> None:
         self.category = category
         self.mode = mode
+        self.answer_mode = answer_mode
         self.get_question = get_question
         self.on_answer = on_answer
         self.current_question: Optional[Question] = None
         self.active = True
         self.play_audio = play_audio
         self.all_categories = list(all_categories or [category])
+        self.get_answers = get_answers or (lambda _category: [])
 
         self.frame = tk.LabelFrame(
             parent,
@@ -521,11 +537,15 @@ class QuestionCard:
         )
         self.question_label.pack(anchor="w", pady=(0, 16))
 
+        self.answer_container = tk.Frame(self.frame)
+        self.answer_container.pack(fill="x")
+
+        self.choice_frame = tk.Frame(self.answer_container)
         self.buttons: List[tk.Button] = []
         self._default_button_styles: List[Dict[str, str]] = []
         for index in range(4):
             button = tk.Button(
-                self.frame,
+                self.choice_frame,
                 text="",
                 font=("Segoe UI", 16),
                 command=lambda idx=index: self.submit(idx),
@@ -541,6 +561,49 @@ class QuestionCard:
                 }
             )
 
+        self.type_frame = tk.Frame(self.answer_container)
+        entry_row = tk.Frame(self.type_frame)
+        entry_row.pack(fill="x")
+        self.answer_var = tk.StringVar()
+        self.answer_entry = tk.Entry(
+            entry_row,
+            textvariable=self.answer_var,
+            font=("Segoe UI", 16),
+        )
+        self.answer_entry.pack(side="left", fill="x", expand=True)
+        self.answer_entry.bind("<Return>", self.submit_text)
+        self.answer_entry.bind("<KeyRelease>", self._handle_entry_changed)
+        self.answer_entry.bind("<FocusIn>", self._handle_entry_changed)
+        self._entry_default_bg = self.answer_entry.cget("background")
+
+        self.type_submit_button = tk.Button(
+            entry_row,
+            text="Submit",
+            font=("Segoe UI", 12),
+            command=self.submit_text,
+        )
+        self.type_submit_button.pack(side="left", padx=(8, 0))
+
+        helpers_row = tk.Frame(self.type_frame)
+        helpers_row.pack(anchor="w", pady=(6, 0), fill="x")
+        self.type_help_var = tk.BooleanVar(value=False)
+        self.type_help_check = tk.Checkbutton(
+            helpers_row,
+            text="Type help",
+            variable=self.type_help_var,
+            command=self._handle_entry_changed,
+        )
+        self.type_help_check.pack(side="left")
+
+        self.suggestion_box = tk.Listbox(
+            self.type_frame,
+            height=5,
+            activestyle="dotbox",
+            exportselection=False,
+        )
+        self.suggestion_box.bind("<<ListboxSelect>>", self._apply_suggestion)
+        self.suggestions_visible = False
+
         self.feedback_label = tk.Label(
             self.frame,
             textvariable=self.feedback_var,
@@ -551,6 +614,7 @@ class QuestionCard:
         )
         self.feedback_label.pack(anchor="w", pady=(10, 0))
 
+        self._configure_answer_mode()
         self.load_question()
 
     def _title_text(self) -> str:
@@ -572,6 +636,8 @@ class QuestionCard:
         if self.category not in self.all_categories:
             self.category = random.choice(self.all_categories)
         self.load_question()
+        if self.answer_mode == "type":
+            self._handle_entry_changed()
 
     def _apply_button_style(self, button: tk.Button, bg: str, fg: str) -> None:
         button.config(
@@ -580,6 +646,15 @@ class QuestionCard:
             activebackground=bg,
             activeforeground=fg,
         )
+
+    def _configure_answer_mode(self) -> None:
+        if self.answer_mode == "type":
+            self.choice_frame.pack_forget()
+            self.type_frame.pack(fill="x")
+        else:
+            self.type_frame.pack_forget()
+            self.choice_frame.pack(fill="x")
+            self._hide_suggestions()
 
     def load_question(self) -> None:
         """Populate the card with a fresh question and answer options."""
@@ -592,6 +667,10 @@ class QuestionCard:
             self.feedback_var.set(str(error))
             for button in self.buttons:
                 button.config(text="", state=tk.DISABLED)
+            if self.answer_mode == "type":
+                self.answer_entry.config(state=tk.DISABLED)
+                self.type_submit_button.config(state=tk.DISABLED)
+                self._hide_suggestions()
             self.active = False
             return
 
@@ -599,6 +678,11 @@ class QuestionCard:
         self.question_var.set(question.prompt)
         self.feedback_var.set("")
         self.active = True
+        if self.answer_mode == "type":
+            self.answer_var.set("")
+            self.answer_entry.config(state=tk.NORMAL, background=self._entry_default_bg)
+            self.type_submit_button.config(state=tk.NORMAL)
+            self._hide_suggestions()
 
         for index, (button, option) in enumerate(zip(self.buttons, question.options)):
             defaults = self._default_button_styles[index]
@@ -610,9 +694,75 @@ class QuestionCard:
                 activebackground=defaults["activebackground"],
                 activeforeground=defaults["activeforeground"],
             )
+            button.config(state=tk.NORMAL)
+
+    def set_answer_mode(self, mode: str) -> None:
+        """Switch between multiple choice and type mode."""
+        if mode not in {"choice", "type"}:
+            return
+        if mode == self.answer_mode:
+            return
+        self.answer_mode = mode
+        self._configure_answer_mode()
+        self.load_question()
+
+    def _handle_entry_changed(self, _event: Optional[tk.Event] = None) -> None:
+        if self.answer_mode != "type":
+            return
+        if not self.type_help_var.get():
+            self._hide_suggestions()
+            return
+        query = self.answer_var.get().strip()
+        if not query:
+            self._hide_suggestions()
+            return
+        lowered_query = query.lower()
+        matches: List[str] = []
+        for answer in self.get_answers(self.category):
+            if lowered_query in answer.lower():
+                matches.append(answer)
+                if len(matches) >= 8:
+                    break
+        if not matches:
+            self._hide_suggestions()
+            return
+        self.suggestion_box.delete(0, tk.END)
+        for match in matches:
+            self.suggestion_box.insert(tk.END, match)
+        if not self.suggestions_visible:
+            self.suggestion_box.pack(fill="x", pady=(6, 0))
+            self.suggestions_visible = True
+
+    def _apply_suggestion(self, _event: Optional[tk.Event] = None) -> None:
+        selection = self.suggestion_box.curselection()
+        if not selection:
+            return
+        value = self.suggestion_box.get(selection[0])
+        self.answer_var.set(value)
+        self.answer_entry.icursor(tk.END)
+        self._hide_suggestions()
+
+    def _hide_suggestions(self) -> None:
+        if self.suggestions_visible:
+            self.suggestion_box.pack_forget()
+            self.suggestions_visible = False
+        self.suggestion_box.selection_clear(0, tk.END)
+
+    def _handle_result(self, is_correct: bool) -> None:
+        if self.current_question is None:
+            return
+        self.on_answer(self.category, is_correct, self.current_question.korean)
+        if self.play_audio:
+            self.play_audio(self.current_question.korean)
+
+    def _queue_next_question(self) -> None:
+        self._rotate_category()
+        self.frame.after(1500, self.load_question)
 
     def submit(self, index: int) -> None:
         """Handle a user selecting one of the answer buttons."""
+        if self.answer_mode != "choice":
+            return
         if not self.active or self.current_question is None:
             return
         if index >= len(self.current_question.options):
@@ -620,9 +770,7 @@ class QuestionCard:
 
         choice = self.current_question.options[index]
         is_correct = choice == self.current_question.answer
-        self.on_answer(self.category, is_correct, self.current_question.korean)
-        if self.play_audio:
-            self.play_audio(self.current_question.korean)
+        self._handle_result(is_correct)
 
         selected_button = self.buttons[index]
         if is_correct:
@@ -646,8 +794,33 @@ class QuestionCard:
             button.config(state=tk.DISABLED)
 
         # Rotate to a random other category for this panel, then queue next question.
-        self._rotate_category()
-        self.frame.after(1500, self.load_question)
+        self._queue_next_question()
+
+    def submit_text(self, _event: Optional[tk.Event] = None) -> None:
+        """Evaluate a typed answer."""
+        if self.answer_mode != "type":
+            return
+        if not self.active or self.current_question is None:
+            return
+        guess = self.answer_var.get()
+        if not guess.strip():
+            self.feedback_var.set("Please type an answer before submitting.")
+            return
+        is_correct = normalize_answer(guess) == normalize_answer(
+            self.current_question.answer
+        )
+        self._handle_result(is_correct)
+        if is_correct:
+            self.feedback_var.set("Correct!")
+            self.answer_entry.config(background="#d4edda")
+        else:
+            self.feedback_var.set(f"Correct answer: {self.current_question.answer}")
+            self.answer_entry.config(background="#f8d7da")
+        self.answer_entry.config(state=tk.DISABLED)
+        self.type_submit_button.config(state=tk.DISABLED)
+        self.active = False
+        self._hide_suggestions()
+        self._queue_next_question()
 
     def set_font_scheme(self, scheme: Dict[str, Tuple[Any, ...]]) -> None:
         """Apply the supplied font scheme to labels and buttons."""
@@ -657,6 +830,8 @@ class QuestionCard:
         self.question_label.config(font=question_font)
         for button in self.buttons:
             button.config(font=option_font)
+        self.answer_entry.config(font=option_font)
+        self.type_submit_button.config(font=option_font)
         self.feedback_label.config(font=feedback_font)
 
 
@@ -683,6 +858,7 @@ class QuizApp:
         self.active_categories = list(self.categories)
         self.cards: List[QuestionCard] = []
         self.translation_direction = "ko-en"
+        self.answer_mode = "choice"
         if category_groups:
             self.category_groups = category_groups
         else:
@@ -741,6 +917,27 @@ class QuizApp:
             wraplength=200,
         )
         section_status_label.pack(anchor="w", pady=(4, 0))
+        self.answer_mode_var = tk.StringVar(value=self.answer_mode)
+        answer_mode_frame = tk.Frame(controls_frame)
+        answer_mode_frame.pack(anchor="w", pady=(10, 0), fill="x")
+        answer_mode_label = tk.Label(
+            answer_mode_frame, text="Answer mode:", font=("Segoe UI", 10, "bold")
+        )
+        answer_mode_label.pack(anchor="w")
+        answer_mode_row = tk.Frame(answer_mode_frame)
+        answer_mode_row.pack(anchor="w", pady=(4, 0))
+        answer_mode_options = (("choice", "Multiple choice"), ("type", "Type mode"))
+        for index, (value, label) in enumerate(answer_mode_options):
+            button = tk.Radiobutton(
+                answer_mode_row,
+                text=label,
+                value=value,
+                variable=self.answer_mode_var,
+                indicatoron=False,
+                width=14,
+                command=self._handle_answer_mode_change,
+            )
+            button.pack(side="left", padx=(0 if index == 0 else 6, 0))
         self.score_toggle_button = tk.Button(
             controls_frame,
             text="Hide Scores",
@@ -934,6 +1131,8 @@ class QuizApp:
                     self.handle_answer,
                     self.audio_manager.play,
                     all_categories=categories,
+                    answer_mode=self.answer_mode,
+                    get_answers=self.get_category_answers,
                 )
                 card.frame.grid(row=row, column=col, padx=8, pady=6, sticky="nsew")
                 card.set_font_scheme(self.font_presets[self.current_font_size])
@@ -946,6 +1145,13 @@ class QuizApp:
         pool = self.vocabulary[category]
         stats = self.progress.setdefault(category, {})
         return build_question(pool, stats, mode, self.translation_direction)
+
+    def get_category_answers(self, category: str) -> List[str]:
+        """Return all possible answers for the current direction."""
+        pool = self.vocabulary.get(category, [])
+        if self.translation_direction == "ko-en":
+            return [english for _, english in pool]
+        return [korean for korean, _ in pool]
 
     def handle_answer(self, category: str, is_correct: bool, korean_word: str) -> None:
         """Update scores and refresh the scoreboard when a card reports an answer."""
@@ -1040,6 +1246,18 @@ class QuizApp:
         self.current_font_size = size
         for card in self.cards:
             card.set_font_scheme(scheme)
+
+    def _handle_answer_mode_change(self) -> None:
+        """Switch between multiple-choice and typing practice."""
+        mode = self.answer_mode_var.get()
+        if mode not in ("choice", "type"):
+            mode = "choice"
+            self.answer_mode_var.set(mode)
+        if mode == self.answer_mode:
+            return
+        self.answer_mode = mode
+        for card in self.cards:
+            card.set_answer_mode(mode)
 
     def _handle_direction_change(self) -> None:
         """Switch between Korean→English and English→Korean practice."""

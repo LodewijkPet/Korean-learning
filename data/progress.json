@@ -1,7 +1,7 @@
 {
   "__meta__": {
-    "streak": 12,
-    "streak_timestamp": "2025-11-10 18:21",
+    "streak": 2,
+    "streak_timestamp": "2025-11-10 18:39",
     "longest_streak": 59,
     "longest_streak_timestamp": "2025-11-09 12:52"
   },
@@ -192,6 +192,11 @@
       "history": [
         1
       ]
+    },
+    "배를 타다": {
+      "history": [
+        1
+      ]
     }
   },
   "SKNS1b Vocabulary 2": {
@@ -296,6 +301,7 @@
     },
     "얼마예요?": {
       "history": [
+        1,
         1
       ]
     }
@@ -1114,6 +1120,11 @@
       "history": [
         1
       ]
+    },
+    "까지": {
+      "history": [
+        0
+      ]
     }
   },
   "Nouns": {
@@ -1845,6 +1856,7 @@
         0,
         1,
         0,
+        1,
         1
       ]
     },
@@ -2202,7 +2214,8 @@
     "무슨": {
       "history": [
         1,
-        1
+        1,
+        0
       ]
     },
     "몇 호": {
